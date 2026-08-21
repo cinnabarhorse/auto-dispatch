@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "route": {
+      "type": "string",
+      "enum": [
+        "luna-low",
+        "luna-medium",
+        "terra-low",
+        "terra-medium",
+        "terra-high",
+        "terra-xhigh",
+        "sol-medium",
+        "sol-high",
+        "sol-xhigh",
+        "sol-max"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": ["route", "reason"]
+}

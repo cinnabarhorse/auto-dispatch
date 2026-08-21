@@ -11,7 +11,9 @@ assessor task, subagent, daemon, configuration file, or persistent session.
 
 Invocation explicitly authorizes one GPT-5.6 Sol Max assessment, creation of one
 new Codex task, transfer of the calling task's active Goal, and recoverable
-archival of the calling task. It does not authorize deletion, deployment,
+archival of the calling task. For an active Goal, the source archives itself
+after creating the destination, so Goal auto-continuation cannot re-activate it
+before the destination verifies the archive receipt. It does not authorize deletion, deployment,
 merging, paid third-party models, or external side effects inside the
 destination task.
 
@@ -118,27 +120,35 @@ Create exactly one destination task with:
   actual task;
 - `title`: a short task title without the model or route name.
 
-The handoff step must tell the destination to use the `source_thread_id` from
-its Codex delegation envelope, use `wait_threads` until that source turn is
-terminal, then use `set_thread_archived` to archive that exact source before
-executing the actual task. It must never archive the destination.
+Without an active Goal, the handoff step must tell the destination to use the
+`source_thread_id` from its Codex delegation envelope, use `wait_threads` until
+that source turn is terminal, then use `set_thread_archived` to archive that
+exact source before executing the actual task. It must never archive the
+destination.
 
 When transferring an active Goal, require this stricter sequence:
 
-1. Verify that the source id, `wait_threads`, `set_thread_archived`, and
-   `create_goal` are available before changing state.
-2. Wait for the source turn to become terminal, then archive that exact source.
-3. Call `create_goal` in the destination with the sanitized objective. Set
+1. Before creating the destination, verify that `set_thread_archived`,
+   `list_archived_threads`, and `create_goal` are available. Include an exact
+   source-archive receipt requirement in the destination handoff step.
+2. After successful destination creation, archive the calling source task by
+   its exact thread ID. Do not wait for a terminal source turn: an active Goal
+   can automatically start another turn and make that wait impossible. If
+   archival fails, do not emit the created-task directive; tell the destination
+   to stop when it cannot find that exact ID in `list_archived_threads`.
+3. Require the destination to confirm its exact `source_thread_id` appears in
+   `list_archived_threads` before it calls `create_goal`; it must never archive
+   the source itself for this path. Call `create_goal` with the sanitized objective. Set
    `token_budget` only when a positive remaining budget was captured; otherwise
    omit it.
 4. Execute the actual task only after Goal creation succeeds.
 
-If preflight, waiting, or archival fails, do not create the Goal or execute the
-task; leave the source active and report the failed handoff. If Goal creation
-fails after archival, immediately unarchive the exact source and stop. Never
-allow both tasks to hold active copies of the same Goal. The user's explicit
-invocation authorizes recreation of only the Goal returned by `get_goal`; never
-infer a new Goal when none is active.
+If destination creation, source archival, or destination archive verification fails, do not
+create the Goal or execute the task. If source archival failed, leave the source
+active; if it succeeded but Goal creation fails, immediately unarchive the
+exact source and stop. Never allow both tasks to hold active copies of the same
+Goal. The user's explicit invocation authorizes recreation of only the Goal
+returned by `get_goal`; never infer a new Goal when none is active.
 
 Without an active Goal, if the source id or an archival tool is unavailable,
 continue the task and report that the source remains active. Do not include
@@ -153,6 +163,6 @@ tool that requires a thread ID.
 
 Return one concise line naming the chosen model, effort, assessor reason, and
 whether an active Goal will transfer. Then emit the app's created-task directive
-with the returned `threadId` or `clientThreadId` on its own line. Do not
-self-archive: the destination owns the post-turn archival so this final handoff
-remains visible. Archive; never delete.
+with the returned `threadId` or `clientThreadId` on its own line. For an active
+Goal transfer, archive the source immediately after creation; otherwise the
+destination owns post-turn archival. Archive; never delete.

@@ -95,11 +95,12 @@ only changing single-agent reasoning effort.
 - Cleans only its validated `/tmp/auto-dispatch.*` scratch directory.
 - Does not retry a failed paid assessment automatically.
 - Leaves the source task active if routing or destination creation fails.
-- Activates a transferred Goal only after the source is archived, preventing
-  two continuation loops from running at once.
+- Archives the source immediately after creating an active-Goal destination,
+  then requires that destination to verify the exact archive receipt before
+  activating the transferred Goal.
 - Unarchives the source if destination Goal creation fails.
-- Archives the source task only after its handoff turn finishes; it never
-  deletes the task.
+- For transfers without an active Goal, archives the source only after its
+  handoff turn finishes; it never deletes the task.
 
 Check local prerequisites without spending a model turn:
 

@@ -1,6 +1,6 @@
 ---
 name: auto-dispatch
-description: In ChatGPT desktop Codex, rate the current task with an ephemeral GPT-5.6 Sol Max run, create one new task using the selected GPT-5.6 model and reasoning effort, and archive the source after a successful handoff. Use only when the user explicitly invokes $auto-dispatch; never trigger it for ordinary work because it spends a Sol Max routing turn and changes task state.
+description: In ChatGPT desktop Codex, rate the current task with an ephemeral GPT-5.6 Sol Max run, create one new task using the selected GPT-5.6 model and reasoning effort, transfer any active Goal, and archive the source after a successful handoff. Use only when the user explicitly invokes $auto-dispatch; never trigger it for ordinary work because it spends a Sol Max routing turn and changes task state.
 ---
 
 # Auto Dispatch
@@ -10,22 +10,35 @@ bundled assessor wrapper for one ephemeral read-only run. Do not create an
 assessor task, subagent, daemon, configuration file, or persistent session.
 
 Invocation explicitly authorizes one GPT-5.6 Sol Max assessment, creation of one
-new Codex task, and recoverable archival of the calling task. It does not
-authorize deletion, deployment, merging, paid third-party models, or external
-side effects inside the destination task.
+new Codex task, transfer of the calling task's active Goal, and recoverable
+archival of the calling task. It does not authorize deletion, deployment,
+merging, paid third-party models, or external side effects inside the
+destination task.
 
 Require the ChatGPT desktop Codex task-listing, task-creation, task-wait, and
-task-archive tools. If any are unavailable, stop without assessing or changing
-task state.
+task-archive tools plus Goal inspection. If any are unavailable, stop without
+assessing or changing task state.
 
 ## 1. Prepare the assessment
 
-Capture a self-contained version of the user's actual task. Remove only the
-`$auto-dispatch` invocation and routing meta-request so the destination cannot
-re-trigger this skill. Include only prior context, repository constraints,
-local file paths, and already-recorded authorizations that the destination
-needs. Never copy credentials, authentication material, or unrelated tool
-output.
+Call `get_goal` before spending the assessment turn:
+
+- If there is no Goal or it is complete, proceed without Goal transfer.
+- If it is active, record its exact objective and whether it has an explicit
+  token budget.
+- If it is paused, blocked, or budget-limited, stop before assessment and report
+  that the user must resolve that lifecycle state first. Never silently resume
+  or replenish it.
+
+Capture a self-contained version of the user's actual task. When an active Goal
+exists, use its objective as the canonical task and add only compatible
+constraints from the invocation. If they materially conflict, stop before
+assessment. Remove only the `$auto-dispatch` invocation and routing
+meta-request from both the task and transferred objective so the destination
+cannot re-trigger this skill. Include only prior context, repository
+constraints, local file paths, and already-recorded authorizations that the
+destination needs. Never copy credentials, authentication material, or
+unrelated tool output.
 
 If required context exists only in a non-forwardable attachment, browser/UI
 state, or ambiguous project, stop without archiving and explain the blocker.
@@ -82,6 +95,12 @@ scratch cleanup fails, or the selected pair is unavailable, stop without
 creating or archiving any task. Do not silently fall back to another model or
 retry the paid assessment automatically.
 
+If an active Goal was recorded, call `get_goal` again immediately before task
+creation. Stop if its objective or active status changed. Capture its latest
+positive remaining token budget when it is budgeted; never copy the original
+budget, so dispatch cannot refresh authorized spend. Treat a null remaining
+budget as unbudgeted and stop if a budgeted Goal has no remaining budget.
+
 ## 3. Create the destination task
 
 Call the native project-listing tool before the task-creation tool. Preserve
@@ -95,15 +114,35 @@ Create exactly one destination task with:
 
 - `model`: the mapped GPT-5.6 model;
 - `thinking`: the mapped effort;
-- `prompt`: a handoff step followed by the self-contained actual task;
+- `prompt`: a handoff step, optional Goal-transfer step, and the self-contained
+  actual task;
 - `title`: a short task title without the model or route name.
 
 The handoff step must tell the destination to use the `source_thread_id` from
 its Codex delegation envelope, use `wait_threads` until that source turn is
 terminal, then use `set_thread_archived` to archive that exact source before
-executing the actual task. It must never archive the destination. If the source
-id or either tool is unavailable, continue the task and report that the source
-remains active. Do not include `$auto-dispatch` in the destination prompt.
+executing the actual task. It must never archive the destination.
+
+When transferring an active Goal, require this stricter sequence:
+
+1. Verify that the source id, `wait_threads`, `set_thread_archived`, and
+   `create_goal` are available before changing state.
+2. Wait for the source turn to become terminal, then archive that exact source.
+3. Call `create_goal` in the destination with the sanitized objective. Set
+   `token_budget` only when a positive remaining budget was captured; otherwise
+   omit it.
+4. Execute the actual task only after Goal creation succeeds.
+
+If preflight, waiting, or archival fails, do not create the Goal or execute the
+task; leave the source active and report the failed handoff. If Goal creation
+fails after archival, immediately unarchive the exact source and stop. Never
+allow both tasks to hold active copies of the same Goal. The user's explicit
+invocation authorizes recreation of only the Goal returned by `get_goal`; never
+infer a new Goal when none is active.
+
+Without an active Goal, if the source id or an archival tool is unavailable,
+continue the task and report that the source remains active. Do not include
+`$auto-dispatch` in the destination prompt or Goal objective.
 
 If project resolution is ambiguous or creation fails, leave the source active.
 Treat either a returned `threadId` or `clientThreadId` as an accepted handoff;
@@ -112,7 +151,8 @@ tool that requires a thread ID.
 
 ## 4. Report
 
-Return one concise line naming the chosen model, effort, and assessor reason.
-Then emit the app's created-task directive with the returned `threadId` or
-`clientThreadId` on its own line. Do not self-archive: the destination owns the
-post-turn archival so this final handoff remains visible. Archive; never delete.
+Return one concise line naming the chosen model, effort, assessor reason, and
+whether an active Goal will transfer. Then emit the app's created-task directive
+with the returned `threadId` or `clientThreadId` on its own line. Do not
+self-archive: the destination owns the post-turn archival so this final handoff
+remains visible. Archive; never delete.

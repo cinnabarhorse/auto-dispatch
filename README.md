@@ -3,12 +3,14 @@
 Auto Dispatch is an explicit-only Codex skill that uses one ephemeral
 GPT-5.6 Sol Max assessment to choose a GPT-5.6 model and reasoning effort,
 starts the actual work in a new Codex task, and archives the source task after
-the handoff completes.
+the handoff completes. If the source has an active Goal, Auto Dispatch also
+transfers its objective and remaining token budget.
 
 ## Requirements
 
 - ChatGPT desktop with Codex and native task creation, waiting, and archival
   tools
+- Native Goal inspection; Goal creation when transferring an active Goal
 - Codex CLI available as `codex`
 - Python 3
 - A Unix-like local host with `/tmp` and `mktemp`
@@ -41,6 +43,23 @@ Select **Auto Dispatch** from the Skills picker, or mention it explicitly where
 ```text
 $auto-dispatch Fix the flaky sync test and open a pull request.
 ```
+
+To transfer an existing Goal, set it first and then invoke Auto Dispatch in the
+same task:
+
+```text
+/goal Reduce p95 latency below 120 ms while keeping correctness tests green
+```
+
+After the Goal is active:
+
+```text
+$auto-dispatch Transfer this active Goal to the best route.
+```
+
+Only active Goals transfer. Auto Dispatch preserves the remaining explicit
+token budget rather than resetting it. It leaves paused, blocked, and
+budget-limited Goals untouched so the user can resolve their lifecycle state.
 
 Auto Dispatch never runs implicitly. Each invocation authorizes one Sol Max
 routing assessment, creation of one destination task, and recoverable archival
@@ -76,6 +95,9 @@ only changing single-agent reasoning effort.
 - Cleans only its validated `/tmp/auto-dispatch.*` scratch directory.
 - Does not retry a failed paid assessment automatically.
 - Leaves the source task active if routing or destination creation fails.
+- Activates a transferred Goal only after the source is archived, preventing
+  two continuation loops from running at once.
+- Unarchives the source if destination Goal creation fails.
 - Archives the source task only after its handoff turn finishes; it never
   deletes the task.
 
@@ -93,3 +115,4 @@ python3 scripts/run_assessor.py --check
 
 - [Build skills in Codex](https://learn.chatgpt.com/docs/build-skills)
 - [Choose Codex models and reasoning effort](https://learn.chatgpt.com/docs/models)
+- [Using Goals in Codex](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex)

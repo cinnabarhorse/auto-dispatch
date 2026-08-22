@@ -1,6 +1,6 @@
 ---
 name: auto-dispatch
-description: In ChatGPT desktop Codex, rate the current task with an ephemeral GPT-5.6 Sol Max run, create one new task using the selected GPT-5.6 model and reasoning effort, transfer any active Goal, and archive the source after a successful handoff. Use only when the user explicitly invokes $auto-dispatch; never trigger it for ordinary work because it spends a Sol Max routing turn and changes task state.
+description: In ChatGPT desktop Codex, rate the current task with an ephemeral GPT-5.6 Sol Max run, create one new task using the selected GPT-5.6 model and reasoning effort, transfer an eligible active Goal, and archive the source after a successful handoff. Use only when the user explicitly invokes $auto-dispatch; never trigger it for ordinary work because it spends a Sol Max routing turn and changes task state.
 ---
 
 # Auto Dispatch
@@ -11,23 +11,26 @@ assessor task, subagent, daemon, configuration file, or persistent session.
 
 Invocation explicitly authorizes one GPT-5.6 Sol Max assessment, creation of one
 new Codex task, transfer of the calling task's active Goal, and recoverable
-archival of the calling task. For an active Goal, the source archives itself
-after creating the destination, so Goal auto-continuation cannot re-activate it
-before the destination verifies the archive receipt. It does not authorize deletion, deployment,
-merging, paid third-party models, or external side effects inside the
-destination task.
+archival of the calling task. The destination owns archival of the exact source
+task; the source never archives itself. This keeps an interruption after task
+creation from stranding a created destination behind a missing archive receipt.
+It does not authorize deletion, deployment, merging, paid third-party models,
+or external side effects inside the destination task.
 
-Require the ChatGPT desktop Codex task-listing, task-creation, task-wait, and
-task-archive tools plus Goal inspection. If any are unavailable, stop without
-assessing or changing task state.
+Require the ChatGPT desktop Codex task-listing, task-reading, task-creation,
+task-wait, and task-archive tools plus Goal inspection. An active Goal transfer
+also requires archived-task listing and Goal creation. If any required tool is
+unavailable, stop without assessing or changing task state.
 
 ## 1. Prepare the assessment
 
 Call `get_goal` before spending the assessment turn:
 
 - If there is no Goal or it is complete, proceed without Goal transfer.
-- If it is active, record its exact objective and whether it has an explicit
-  token budget.
+- If it is active and unbudgeted, record its exact objective.
+- If it has an explicit token budget, stop before assessment. Current task tools
+  cannot atomically read its remaining budget after source archival, so
+  recreation could refresh authorized spend.
 - If it is paused, blocked, or budget-limited, stop before assessment and report
   that the user must resolve that lifecycle state first. Never silently resume
   or replenish it.
@@ -41,6 +44,21 @@ cannot re-trigger this skill. Include only prior context, repository
 constraints, local file paths, and already-recorded authorizations that the
 destination needs. Never copy credentials, authentication material, or
 unrelated tool output.
+
+Read the source task and record the exact user-message ID that invoked
+`$auto-dispatch` as the invocation ID. Sanitize the task before recovery checks.
+Put `AUTO_DISPATCH_INVOCATION_ID: <exact-id>` in the destination prompt.
+
+Before running the assessor, make the invocation idempotent. List current tasks
+and archived-task pages, then use `read_thread` to find destinations whose
+structured delegation has the exact current source thread ID and whose prompt
+has the exact invocation ID. Do not match on title, summary, or task prose. If
+exactly one exists, do not assess or create again; continue that handoff. If
+more than one exists, stop and report the ambiguity. Also inspect the source
+history for an assessor launch with this invocation ID. If one launched but no
+destination is discoverable, do not rerun it automatically; report the
+ambiguous handoff and require explicit authorization for a fresh assessment. A
+newer user instruction that cancels or replaces the handoff always wins.
 
 If required context exists only in a non-forwardable attachment, browser/UI
 state, or ambiguous project, stop without archiving and explain the blocker.
@@ -98,10 +116,7 @@ creating or archiving any task. Do not silently fall back to another model or
 retry the paid assessment automatically.
 
 If an active Goal was recorded, call `get_goal` again immediately before task
-creation. Stop if its objective or active status changed. Capture its latest
-positive remaining token budget when it is budgeted; never copy the original
-budget, so dispatch cannot refresh authorized spend. Treat a null remaining
-budget as unbudgeted and stop if a budgeted Goal has no remaining budget.
+creation. Stop if its objective or active unbudgeted status changed.
 
 ## 3. Create the destination task
 
@@ -120,49 +135,76 @@ Create exactly one destination task with:
   actual task;
 - `title`: a short task title without the model or route name.
 
-Without an active Goal, the handoff step must tell the destination to use the
-`source_thread_id` from its Codex delegation envelope, use `wait_threads` until
-that source turn is terminal, then use `set_thread_archived` to archive that
-exact source before executing the actual task. It must never archive the
-destination.
+Immediately before `create_thread`, repeat the exact invocation-ID destination
+scan. If a destination appeared, recover it instead of creating another.
+
+Without an active Goal, the destination must use the `source_thread_id` from
+its Codex delegation envelope and the exact invocation ID from its prompt. It
+must wait for that source turn to become terminal; a timeout or nonterminal
+state means stop without archiving or executing. After checking that no newer
+source message cancels or replaces the handoff, archive the exact source and
+confirm it through paginated `list_archived_threads` before executing. If the
+archive call or receipt is ambiguous, unarchive the exact source, verify that it
+is listed as active, and stop. It must never archive itself or continue without
+the receipt.
 
 When transferring an active Goal, require this stricter sequence:
 
 1. Before creating the destination, verify that `set_thread_archived`,
-   `list_archived_threads`, and `create_goal` are available. Include an exact
-   source-archive receipt requirement in the destination handoff step.
-2. After successful destination creation, archive the calling source task by
-   its exact thread ID. Do not wait for a terminal source turn: an active Goal
-   can automatically start another turn and make that wait impossible. If
-   archival fails, do not emit the created-task directive; tell the destination
-   to stop when it cannot find that exact ID in `list_archived_threads`.
-3. Require the destination to confirm its exact `source_thread_id` appears in
-   `list_archived_threads` before it calls `create_goal`; it must never archive
-   the source itself for this path. Call `create_goal` with the sanitized objective. Set
-   `token_budget` only when a positive remaining budget was captured; otherwise
-   omit it.
-4. Execute the actual task only after Goal creation succeeds.
+   `list_archived_threads`, `list_threads`, `read_thread`, `get_goal`, and
+   `create_goal` are available. Include the invocation ID and exact
+   source-archive receipt requirement in the destination prompt.
+2. On every destination turn, call `get_goal` first. If the exact transferred
+   objective already exists and is active, treat the handoff as committed and
+   continue the actual task without archiving, unarchiving, or recreating it. If
+   a different Goal exists, stop.
+3. Before archival, read the exact source and compare user messages against the
+   invoking-message ID. Stop without archiving when a newer message cancels,
+   replaces, or conflicts with the handoff; incorporate compatible additions.
+4. Call `set_thread_archived` with `archived: true` for the exact source ID
+   immediately, without waiting for source termination or auto-continuation.
+   This exact archival is authorized by the invocation. Never archive the
+   destination or an inferred ID.
+5. Confirm the exact source through paginated `list_archived_threads` before
+   Goal creation. If the archive call or receipt is ambiguous, unarchive the
+   exact source, verify it is listed as active, and stop without a Goal or task
+   execution.
+6. Call `create_goal` with the sanitized objective and omit `token_budget`.
+   After every success, error, timeout, or interrupted-result recovery, call
+   `get_goal` in the destination. Only an exact active objective proves commit.
+   If no exact Goal exists, unarchive the source, verify it is active, emit
+   `HANDOFF_ABORTED:<invocation-id>`, and stop. A later automatic resume that
+   finds this marker must not retry; only a newer explicit user request may.
+7. Execute the actual task only after both the source archive receipt and the
+   exact destination Goal are proven.
 
-If destination creation, source archival, or destination archive verification fails, do not
-create the Goal or execute the task. If source archival failed, leave the source
-active; if it succeeded but Goal creation fails, immediately unarchive the
-exact source and stop. Never allow both tasks to hold active copies of the same
-Goal. The user's explicit invocation authorizes recreation of only the Goal
-returned by `get_goal`; never infer a new Goal when none is active.
-
-Without an active Goal, if the source id or an archival tool is unavailable,
-continue the task and report that the source remains active. Do not include
+If destination creation fails, leave the source active. If destination-owned
+archival, receipt verification, or Goal reconciliation fails, do not execute
+the task; restore and verify the source before stopping whenever no exact
+destination Goal exists. Source archival fences its original Goal from running;
+destination Goal creation happens only behind that fence, so at most one copy
+is runnable. The user's invocation authorizes recreation of only the Goal
+returned by `get_goal`; never infer a Goal when none is active. Do not include
 `$auto-dispatch` in the destination prompt or Goal objective.
 
 If project resolution is ambiguous or creation fails, leave the source active.
 Treat either a returned `threadId` or `clientThreadId` as an accepted handoff;
 the latter means worktree setup is queued. Never pass a `clientThreadId` to a
-tool that requires a thread ID.
+tool that requires a thread ID. A timeout, interruption, or malformed
+`create_thread` result is possibly committed: never call `create_thread` again
+automatically. Repeat only the exact invocation-ID discovery scan, waiting for
+an accepted `clientThreadId` to resolve into a readable destination. If no exact
+destination becomes discoverable, report the ambiguous handoff and leave the
+source active.
 
 ## 4. Report
 
 Return one concise line naming the chosen model, effort, assessor reason, and
 whether an active Goal will transfer. Then emit the app's created-task directive
-with the returned `threadId` or `clientThreadId` on its own line. For an active
-Goal transfer, archive the source immediately after creation; otherwise the
-destination owns post-turn archival. Archive; never delete.
+with the returned `threadId` or `clientThreadId` on its own line. Do not
+self-archive: the destination owns post-turn archival so this final handoff can
+remain visible when timing permits. For an active Goal, the destination may
+archive the source before this report completes; accepted task creation remains
+the handoff. On a resumed source turn, recover the exact invocation-ID
+destination instead of rerunning the assessor or creating a duplicate. Archive;
+never delete.

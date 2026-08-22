@@ -4,12 +4,12 @@ Auto Dispatch is an explicit-only Codex skill that uses one ephemeral
 GPT-5.6 Sol Max assessment to choose a GPT-5.6 model and reasoning effort,
 starts the actual work in a new Codex task, and archives the source task after
 the handoff completes. If the source has an active Goal, Auto Dispatch also
-transfers its objective and remaining token budget.
+transfers its objective when the Goal is unbudgeted.
 
 ## Requirements
 
-- ChatGPT desktop with Codex and native task creation, waiting, and archival
-  tools
+- ChatGPT desktop with Codex and native task listing, reading, creation,
+  waiting, and archival tools
 - Native Goal inspection; Goal creation when transferring an active Goal
 - Codex CLI available as `codex`
 - Python 3
@@ -57,8 +57,10 @@ After the Goal is active:
 $auto-dispatch Transfer this active Goal to the best route.
 ```
 
-Only active Goals transfer. Auto Dispatch preserves the remaining explicit
-token budget rather than resetting it. It leaves paused, blocked, and
+Only active unbudgeted Goals transfer. Auto Dispatch stops before assessment
+for an explicitly budgeted Goal because current task tools cannot atomically
+read its remaining budget after source archival; recreating a stale snapshot
+could refresh authorized spend. It also leaves paused, blocked, and
 budget-limited Goals untouched so the user can resolve their lifecycle state.
 
 Auto Dispatch never runs implicitly. Each invocation authorizes one Sol Max
@@ -95,12 +97,18 @@ only changing single-agent reasoning effort.
 - Cleans only its validated `/tmp/auto-dispatch.*` scratch directory.
 - Does not retry a failed paid assessment automatically.
 - Leaves the source task active if routing or destination creation fails.
-- Archives the source immediately after creating an active-Goal destination,
-  then requires that destination to verify the exact archive receipt before
-  activating the transferred Goal.
-- Unarchives the source if destination Goal creation fails.
-- For transfers without an active Goal, archives the source only after its
-  handoff turn finishes; it never deletes the task.
+- Keys each invocation to its exact source user-message ID so an interrupted
+  handoff recovers the existing destination instead of assessing or creating
+  again.
+- Treats ambiguous task creation as possibly committed and never retries it
+  automatically.
+- Makes the destination archive the exact source and verify the archive receipt
+  before activating a transferred Goal.
+- Reconciles ambiguous Goal creation through destination-local Goal inspection.
+- Restores and verifies the source if archival or Goal activation cannot be
+  proven.
+- For transfers without an active Goal, waits for the source handoff turn and
+  still requires an exact archive receipt before work starts.
 
 Check local prerequisites without spending a model turn:
 
